@@ -10,9 +10,13 @@ import {
   Check,
   AlertCircle,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import type { Contact, Application } from "@/types";
-import type { MessageType, ResearchResult } from "@/app/api/networking/generate-message/route";
+import type {
+  MessageType,
+  ResearchResult,
+  CacheInfo,
+} from "@/app/api/networking/generate-message/route";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +30,7 @@ interface GenerateResult {
   variants: { A: Variant; B: Variant; C: Variant };
   messageType: MessageType;
   channel: "LinkedIn DM" | "Email";
+  cacheInfo?: CacheInfo;
 }
 
 // Connection requests have a 200-char limit (per writing style guide)
@@ -139,6 +144,8 @@ export function MessageGenerator({
   const [loadingMsg, setLoadingMsg] = useState(`Researching ${contact.contactName}...`);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateResult | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<CacheInfo | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Channel toggle — defaults to contact's outreach type when applicable
   const initChannel: "LinkedIn DM" | "Email" =
@@ -158,26 +165,42 @@ export function MessageGenerator({
 
   // ── Fetch: research + generate ──────────────────────────────────────────
   const generate = useCallback(
-    async (cachedResearch?: ResearchResult) => {
-      setPhase("loading");
-      setLoadingMsg(
-        cachedResearch
-          ? `Generating messages for ${contact.contactName}...`
-          : `Researching ${contact.contactName}...`
-      );
-      setError(null);
+    async (opts?: {
+      cachedResearch?: ResearchResult;
+      forceRefresh?: boolean;
+      /** When true: keep existing variants visible, only update research card */
+      isRefresh?: boolean;
+    }) => {
+      if (opts?.isRefresh) {
+        setIsRefreshing(true);
+      } else {
+        setPhase("loading");
+        setLoadingMsg(
+          opts?.cachedResearch
+            ? `Generating messages for ${contact.contactName}...`
+            : `Researching ${contact.contactName}...`
+        );
+        setError(null);
+      }
 
       try {
         const res = await fetch("/api/networking/generate-message", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contact, application, channel, cachedResearch }),
+          body: JSON.stringify({
+            contact,
+            application,
+            channel,
+            cachedResearch: opts?.cachedResearch,
+            forceRefresh: opts?.forceRefresh,
+          }),
         });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error ?? "Generation failed");
 
         const data = json.data as GenerateResult;
         setResult(data);
+        setCacheInfo(data.cacheInfo ?? null);
         const v = {
           A: { ...data.variants.A },
           B: { ...data.variants.B },
@@ -185,10 +208,19 @@ export function MessageGenerator({
         };
         setEdited(v);
         originalGenerated.current = { A: { ...v.A }, B: { ...v.B }, C: { ...v.C } };
-        setPhase("ready");
+
+        if (opts?.isRefresh) {
+          setIsRefreshing(false);
+        } else {
+          setPhase("ready");
+        }
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Generation failed");
-        setPhase("error");
+        if (opts?.isRefresh) {
+          setIsRefreshing(false);
+        } else {
+          setError(e instanceof Error ? e.message : "Generation failed");
+          setPhase("error");
+        }
       }
     },
     [contact, application, channel]
@@ -205,7 +237,7 @@ export function MessageGenerator({
   useEffect(() => {
     if (prevChannel.current !== channel) {
       prevChannel.current = channel;
-      if (result) generate(result.research);
+      if (result) generate({ cachedResearch: result.research });
     }
   }, [channel, result, generate]);
 
@@ -296,14 +328,40 @@ export function MessageGenerator({
           </span>
         </button>
         {researchOpen && (
-          <ul className="px-4 pb-3 space-y-1.5">
-            {result.research.bulletPoints.map((bp, i) => (
-              <li key={i} className="flex gap-2 text-[#9ca3af] leading-relaxed">
-                <span className="text-[#3b82f6] shrink-0 mt-0.5">·</span>
-                {bp}
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="px-4 pb-2 space-y-1.5">
+              {result.research.bulletPoints.map((bp, i) => (
+                <li key={i} className="flex gap-2 text-[#9ca3af] leading-relaxed">
+                  <span className="text-[#3b82f6] shrink-0 mt-0.5">·</span>
+                  {bp}
+                </li>
+              ))}
+            </ul>
+            <div className="px-4 pb-3 flex items-center gap-1.5 flex-wrap">
+              {isRefreshing ? (
+                <span className="text-[10px] text-[#6b7280] flex items-center gap-1.5">
+                  <Loader2 size={10} className="animate-spin" />
+                  Re-researching {contact.contactName}...
+                </span>
+              ) : cacheInfo ? (
+                <>
+                  <span className="text-[10px] text-[#4b5563]">
+                    Researched {formatDate(cacheInfo.cachedAt)}
+                  </span>
+                  {cacheInfo.isStale && (
+                    <span className="text-[10px] text-yellow-500/70">· Research may be stale</span>
+                  )}
+                  <span className="text-[10px] text-[#4b5563] mx-0.5">·</span>
+                  <button
+                    className="text-[10px] text-[#3b82f6] hover:text-[#60a5fa] transition-colors"
+                    onClick={() => generate({ forceRefresh: true, isRefresh: true })}
+                  >
+                    Refresh
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </>
         )}
       </div>
 

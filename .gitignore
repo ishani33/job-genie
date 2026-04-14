@@ -15,6 +15,9 @@ out/
 # Editor
 .claude/
 
+# Personal writing style (private)
+ishani-writing-style.md
+
 # Python
 __pycache__/
 *.pyc

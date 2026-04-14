@@ -11,6 +11,17 @@ import { SHEETS } from "@/lib/constants";
 import { generateId, todayISO } from "@/lib/utils";
 import type { Application, Contact } from "@/types";
 
+export interface ResearchCacheEntry {
+  contactName: string;
+  company: string;
+  role: string;
+  linkedinUrl: string;
+  researchSummary: string[];  // bullet points
+  fullResearchData: string;   // JSON-stringified ResearchResult
+  researchedAt: string;       // ISO timestamp
+  rowIndex?: number;
+}
+
 // ─── Auth ──────────────────────────────────────────────────────────────────────
 
 function getAuth() {
@@ -71,7 +82,7 @@ async function getRows(
   const sheets = getSheetsClient();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${sheetName}!A2:Z`,
+    range: `'${sheetName}'!A2:Z`,
   });
   return (res.data.values as string[][]) ?? [];
 }
@@ -84,7 +95,7 @@ async function appendRow(
   const sheets = getSheetsClient();
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${sheetName}!A1`,
+    range: `'${sheetName}'!A1`,
     valueInputOption: "RAW",
     requestBody: { values: [values] },
   });
@@ -100,7 +111,7 @@ async function updateRow(
   const row = rowIndex + 1; // +1 because row 1 is header
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${sheetName}!A${row}`,
+    range: `'${sheetName}'!A${row}`,
     valueInputOption: "RAW",
     requestBody: { values: [values] },
   });
@@ -283,10 +294,94 @@ export async function deleteContact(contact: Contact): Promise<void> {
   await deleteRow(NET_SHEET_ID(), SHEETS.NETWORKING, contact.rowIndex + 1);
 }
 
+// ─── Research Cache CRUD ──────────────────────────────────────────────────────
+
+const CACHE_COLS = [
+  "contactName",
+  "company",
+  "role",
+  "linkedinUrl",
+  "researchSummary",
+  "fullResearchData",
+  "researchedAt",
+] as const;
+
+export async function getResearchCache(
+  contactName: string,
+  company: string
+): Promise<ResearchCacheEntry | null> {
+  try {
+    const rows = await getRows(NET_SHEET_ID(), SHEETS.RESEARCH_CACHE);
+    const idx = rows.findIndex(
+      (r) =>
+        r[0]?.toLowerCase() === contactName.toLowerCase() &&
+        r[1]?.toLowerCase() === company.toLowerCase()
+    );
+    if (idx === -1) return null;
+    const row = rows[idx];
+    return {
+      contactName: row[0] ?? "",
+      company: row[1] ?? "",
+      role: row[2] ?? "",
+      linkedinUrl: row[3] ?? "",
+      researchSummary: JSON.parse(row[4] ?? "[]") as string[],
+      fullResearchData: row[5] ?? "{}",
+      researchedAt: row[6] ?? "",
+      rowIndex: idx + 1,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveResearchCache(
+  entry: Omit<ResearchCacheEntry, "rowIndex">
+): Promise<void> {
+  await appendRow(NET_SHEET_ID(), SHEETS.RESEARCH_CACHE, [
+    entry.contactName,
+    entry.company,
+    entry.role,
+    entry.linkedinUrl,
+    JSON.stringify(entry.researchSummary),
+    entry.fullResearchData,
+    entry.researchedAt,
+  ]);
+}
+
+export async function updateResearchCache(
+  rowIndex: number,
+  entry: Omit<ResearchCacheEntry, "rowIndex">
+): Promise<void> {
+  await updateRow(NET_SHEET_ID(), SHEETS.RESEARCH_CACHE, rowIndex, [
+    entry.contactName,
+    entry.company,
+    entry.role,
+    entry.linkedinUrl,
+    JSON.stringify(entry.researchSummary),
+    entry.fullResearchData,
+    entry.researchedAt,
+  ]);
+}
+
 // ─── Initialize sheets (create header rows if missing) ────────────────────────
 
 export async function initSheets(): Promise<void> {
   const sheets = getSheetsClient();
+
+  async function ensureTabExists(spreadsheetId: string, tabName: string) {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const exists = meta.data.sheets?.some(
+      (s) => s.properties?.title === tabName
+    );
+    if (!exists) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [{ addSheet: { properties: { title: tabName } } }],
+        },
+      });
+    }
+  }
 
   async function ensureHeader(
     sheetId: string,
@@ -295,26 +390,22 @@ export async function initSheets(): Promise<void> {
   ) {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: `${sheetName}!A1:Z1`,
+      range: `'${sheetName}'!A1:Z1`,
     });
     if (!res.data.values || res.data.values.length === 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${sheetName}!A1`,
+        range: `'${sheetName}'!A1`,
         valueInputOption: "RAW",
         requestBody: { values: [headers] },
       });
     }
   }
 
-  await ensureHeader(
-    APP_SHEET_ID(),
-    SHEETS.APPLICATIONS,
-    [...APP_COLS]
-  );
-  await ensureHeader(
-    NET_SHEET_ID(),
-    SHEETS.NETWORKING,
-    [...NET_COLS]
-  );
+  await ensureHeader(APP_SHEET_ID(), SHEETS.APPLICATIONS, [...APP_COLS]);
+  await ensureHeader(NET_SHEET_ID(), SHEETS.NETWORKING, [...NET_COLS]);
+
+  // Research Cache lives as a tab on the Networking spreadsheet
+  await ensureTabExists(NET_SHEET_ID(), SHEETS.RESEARCH_CACHE);
+  await ensureHeader(NET_SHEET_ID(), SHEETS.RESEARCH_CACHE, [...CACHE_COLS]);
 }

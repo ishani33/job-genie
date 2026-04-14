@@ -188,15 +188,48 @@ function BulletDiff({
     <div className="rounded border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-2 space-y-2">
       {/* Diff display or editing textarea */}
       {isEditing ? (
-        <textarea
-          ref={textareaRef}
-          className="input-base w-full resize-none text-xs leading-relaxed"
-          rows={3}
-          value={draftValue}
-          onChange={(e) => setDraftValue(e.target.value)}
-          onBlur={commitEdit}
-          placeholder="Edit the suggested bullet..."
-        />
+        <div className="space-y-2">
+          {action === "modify" && original && (
+            <div>
+              <p className="text-[10px] text-[#4b5563] mb-1">Original</p>
+              <div className="rounded border border-[#252525] bg-[#111] px-2.5 py-2 text-xs text-[#6b7280] leading-relaxed select-text">
+                {original}
+              </div>
+            </div>
+          )}
+          <div>
+            {action === "modify" && original && (
+              <p className="text-[10px] text-[#4b5563] mb-1">Suggested</p>
+            )}
+            <textarea
+              ref={textareaRef}
+              className="input-base w-full resize-none text-xs leading-relaxed"
+              rows={3}
+              value={draftValue}
+              onChange={(e) => setDraftValue(e.target.value)}
+              onBlur={commitEdit}
+              placeholder="Edit the suggested bullet..."
+            />
+            {action === "modify" && original && (
+              <div className="flex gap-3 mt-1.5">
+                <button
+                  type="button"
+                  className="text-[10px] text-[#4b5563] hover:text-[#9ca3af] transition-colors"
+                  onMouseDown={(e) => { e.preventDefault(); setDraftValue(original); }}
+                >
+                  Reset to original
+                </button>
+                <button
+                  type="button"
+                  className="text-[10px] text-[#4b5563] hover:text-[#9ca3af] transition-colors"
+                  onMouseDown={(e) => { e.preventDefault(); setDraftValue(suggestion.suggested); }}
+                >
+                  Reset to suggestion
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       ) : (
         <div
           className={cn(
@@ -254,6 +287,13 @@ function BulletDiff({
             </>
           )}
         </div>
+      )}
+
+      {/* Reasoning — shown below diff when not in edit mode */}
+      {!isEditing && suggestion.reasoning && (
+        <p className="text-[10px] italic text-[#4b5563] leading-relaxed -mt-0.5">
+          {suggestion.reasoning}
+        </p>
       )}
 
       {/* Action buttons */}

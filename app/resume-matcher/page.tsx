@@ -9,6 +9,7 @@ import { MatchResultCard } from "@/components/resume-matcher/MatchResultCard";
 import { SuggestionsPanel } from "@/components/resume-matcher/SuggestionsPanel";
 import { ResumePreviewPanel } from "@/components/resume-matcher/ResumePreviewPanel";
 import { Tier3Picker } from "@/components/resume-matcher/Tier3Picker";
+import { formatDate } from "@/lib/utils";
 import type { Tier } from "@/types";
 import type {
   MatcherStep,
@@ -17,7 +18,31 @@ import type {
   BulletStatus,
   ATSKeyword,
   ResumeFolder,
+  JDSkill,
 } from "@/types/resume-matcher";
+
+// ─── SkillChips ───────────────────────────────────────────────────────────────
+
+function SkillChips({ skills }: { skills: JDSkill[] }) {
+  if (skills.length === 0) return null;
+  return (
+    <div className="px-6 py-2 border-b border-[#2a2a2a] bg-[#0f0f0f] flex items-center gap-2 flex-wrap shrink-0">
+      <span className="text-[10px] text-[#4b5563] font-medium uppercase tracking-wider shrink-0 mr-1">
+        Key Skills
+      </span>
+      {skills.map((s, i) => (
+        <div
+          key={i}
+          className="flex items-center gap-1 bg-[#1a1a1a] border border-[#252525] rounded-full px-2.5 py-1 text-[11px] text-[#9ca3af]"
+          title={s.explanation}
+        >
+          <span className="text-[10px]">🔑</span>
+          <span>{s.skill}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ─── Inner page (uses useSearchParams) ───────────────────────────────────────
 
@@ -31,6 +56,14 @@ function ResumeMatcherInner() {
   const [jdText, setJdText] = useState("");
   const [tier, setTier] = useState<Tier>(1);
   const [companyName, setCompanyName] = useState(params.get("company") ?? "");
+
+  // Skill chips (extracted after JD submit, persist through entire flow)
+  const [jdSkills, setJDSkills] = useState<JDSkill[]>([]);
+
+  // Pick-path state: manual browse
+  const [showFolderBrowse, setShowFolderBrowse] = useState(false);
+  const [resumeFolders, setResumeFolders] = useState<ResumeFolder[]>([]);
+  const [foldersLoading, setFoldersLoading] = useState(false);
 
   // Results
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
@@ -55,7 +88,7 @@ function ResumeMatcherInner() {
     libreofficeMessage: string | null;
   } | null>(null);
 
-  // ─── Matching step ──────────────────────────────────────────────────────────
+  // ─── Step 1: JD submit → extract skills → pick-path ────────────────────────
 
   async function handleInputSubmit({
     jdText: text,
@@ -70,35 +103,77 @@ function ResumeMatcherInner() {
     setTier(t);
     setCompanyName(cn);
     setMatchError(null);
+    setStep("extracting-skills");
 
-    if (t === 3) {
-      setStep("t3-pick");
-      return;
+    try {
+      const res = await fetch("/api/resume-matcher/extract-skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jdText: text }),
+      });
+      const json = await res.json();
+      if (res.ok) setJDSkills((json.data.skills as JDSkill[]) ?? []);
+    } catch {
+      // Non-blocking — proceed to pick-path even without skills
     }
 
+    setStep("pick-path");
+  }
+
+  // ─── Path 1: AI Match ───────────────────────────────────────────────────────
+
+  async function handleAIMatch() {
+    setMatchError(null);
     setStep("matching");
 
     try {
       const res = await fetch("/api/resume-matcher/match", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jdText: text }),
+        body: JSON.stringify({ jdText }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Matching failed");
 
       setMatchResult(json.data as MatchResult);
 
-      if (t === 1) {
+      if (tier === 1) {
         setStep("matched");
-        await runSuggestions(text, json.data as MatchResult);
+        await runSuggestions(jdText, json.data as MatchResult);
       } else {
         setStep("matched");
       }
     } catch (err) {
       setMatchError(err instanceof Error ? err.message : "Unknown error");
-      setStep("input");
+      setStep("pick-path");
     }
+  }
+
+  // ─── Path 2: Manual browse ──────────────────────────────────────────────────
+
+  async function handleBrowseResumes() {
+    setShowFolderBrowse(true);
+    if (resumeFolders.length > 0) return;
+    setFoldersLoading(true);
+    try {
+      const res = await fetch("/api/resume-matcher/list-folders");
+      const json = await res.json();
+      setResumeFolders((json.data as ResumeFolder[]) ?? []);
+    } catch {
+      // Silent failure — grid stays empty with no crash
+    } finally {
+      setFoldersLoading(false);
+    }
+  }
+
+  async function handleManualFolderSelect(folder: ResumeFolder) {
+    const match: MatchResult = {
+      companyFolder: folder.companyFolder,
+      filePath: folder.filePath,
+      reasoning: "Manually selected",
+    };
+    setMatchResult(match);
+    await runSuggestions(jdText, match);
   }
 
   // ─── Suggestion step ────────────────────────────────────────────────────────
@@ -148,7 +223,7 @@ function ResumeMatcherInner() {
     setStep("done");
   }
 
-  // ─── T3 picker ──────────────────────────────────────────────────────────────
+  // ─── T3 picker (legacy path — kept for safety) ──────────────────────────────
 
   function handleT3Select(folder: ResumeFolder) {
     setSavedFolder(folder.companyFolder);
@@ -271,6 +346,9 @@ function ResumeMatcherInner() {
     setSaveStatus("idle");
     setSavedFolder(null);
     setSavedFiles(null);
+    setJDSkills([]);
+    setShowFolderBrowse(false);
+    setResumeFolders([]);
   }
 
   // ─── Render ─────────────────────────────────────────────────────────────────
@@ -298,6 +376,11 @@ function ResumeMatcherInner() {
         )}
       </div>
 
+      {/* Skill chips banner — visible once extracted, throughout entire flow */}
+      {jdSkills.length > 0 &&
+        step !== "input" &&
+        step !== "extracting-skills" && <SkillChips skills={jdSkills} />}
+
       <div className="flex-1 overflow-hidden flex">
         {/* ── Step: input ─────────────────────────────────────────── */}
         {step === "input" && (
@@ -313,6 +396,102 @@ function ResumeMatcherInner() {
               defaultCompany={companyName}
               defaultJdUrl={params.get("jdUrl") ?? ""}
             />
+          </div>
+        )}
+
+        {/* ── Step: extracting-skills (loading) ────────────────────── */}
+        {step === "extracting-skills" && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center space-y-3">
+              <Loader2 size={32} className="animate-spin text-[#3b82f6] mx-auto" />
+              <p className="text-sm text-[#9ca3af]">Extracting key skills...</p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Step: pick-path ──────────────────────────────────────── */}
+        {step === "pick-path" && (
+          <div className="flex-1 overflow-y-auto px-6 py-8">
+            <p className="text-sm text-[#9ca3af] mb-6">
+              How would you like to select a resume?
+            </p>
+            {matchError && (
+              <div className="mb-5 bg-red-500/10 border border-red-500/20 text-red-400 text-sm px-3 py-2 rounded-md">
+                {matchError}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-4 mb-8 max-w-2xl">
+              {/* Path 1: AI Match */}
+              <div className="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-5 flex flex-col gap-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-[#e8e8e8] mb-1.5">
+                    Find Best Match with AI
+                  </h3>
+                  <p className="text-xs text-[#6b7280] leading-relaxed">
+                    Claude scans all your saved resumes and picks the one with
+                    the strongest alignment to this JD.
+                  </p>
+                </div>
+                <button className="btn-primary self-start" onClick={handleAIMatch}>
+                  Find Best Match with AI
+                </button>
+              </div>
+
+              {/* Path 2: Manual Browse */}
+              <div className="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-5 flex flex-col gap-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-[#e8e8e8] mb-1.5">
+                    Browse My Resumes
+                  </h3>
+                  <p className="text-xs text-[#6b7280] leading-relaxed">
+                    Pick a specific saved resume version to tailor — useful when
+                    you already know which base to use.
+                  </p>
+                </div>
+                <button
+                  className="btn-secondary self-start"
+                  onClick={handleBrowseResumes}
+                >
+                  Browse My Resumes
+                </button>
+              </div>
+            </div>
+
+            {/* Folder grid — shown after "Browse My Resumes" is clicked */}
+            {showFolderBrowse && (
+              <div className="max-w-2xl">
+                <h3 className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider mb-3">
+                  Select a resume
+                </h3>
+                {foldersLoading ? (
+                  <div className="flex items-center gap-2 text-[#6b7280] text-xs">
+                    <Loader2 size={13} className="animate-spin" />
+                    Loading resumes...
+                  </div>
+                ) : resumeFolders.length === 0 ? (
+                  <p className="text-xs text-[#4b5563]">No resumes found.</p>
+                ) : (
+                  <div className="grid grid-cols-3 gap-2">
+                    {resumeFolders.map((folder) => (
+                      <button
+                        key={folder.filePath}
+                        className="rounded-md border border-[#2a2a2a] bg-[#161616] hover:border-[#3b82f6]/40 hover:bg-[#1a2233] px-3 py-3 text-left transition-colors group"
+                        onClick={() => handleManualFolderSelect(folder)}
+                      >
+                        <p className="text-xs font-medium text-[#e8e8e8] group-hover:text-[#3b82f6] transition-colors truncate">
+                          {folder.companyFolder}
+                        </p>
+                        {folder.mtime && (
+                          <p className="text-[10px] text-[#4b5563] mt-0.5">
+                            {formatDate(folder.mtime)}
+                          </p>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -349,7 +528,7 @@ function ResumeMatcherInner() {
           </div>
         )}
 
-        {/* ── Step: t3-pick ────────────────────────────────────────── */}
+        {/* ── Step: t3-pick (legacy) ───────────────────────────────── */}
         {step === "t3-pick" && (
           <div className="flex-1 overflow-y-auto px-6 py-5 max-w-xl">
             <Tier3Picker onSelect={handleT3Select} />

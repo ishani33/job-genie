@@ -4,7 +4,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { MatchResult, BulletSuggestion, ATSKeyword } from "@/types/resume-matcher";
+import type { MatchResult, BulletSuggestion, ATSKeyword, JDSkill } from "@/types/resume-matcher";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = "claude-sonnet-4-6";
@@ -109,6 +109,46 @@ Return ONLY valid JSON (no markdown, no explanation outside JSON):
   return result;
 }
 
+// ─── Step 1.5: Extract JD skills (lightweight, runs before match) ──────────────
+
+/**
+ * Extract the top 3-5 key skills / domain expertise from the JD.
+ * Used to show skill chips before and throughout the matching flow.
+ */
+export async function extractJDSkills(jdText: string): Promise<JDSkill[]> {
+  const prompt = `Extract the top 3-5 most important skills, domain expertise, and industry experience this role requires. Be specific — not generic terms like "communication" but specific ones like "LLM evaluation", "enterprise B2B SaaS", "API-first products". For each skill, write a one-line explanation of why it matters for this role.
+
+JOB DESCRIPTION:
+${jdText}
+
+Return ONLY valid JSON (no markdown):
+{
+  "skills": [
+    { "skill": "LLM evaluation and model quality", "explanation": "Role requires owning model quality review process weekly" },
+    { "skill": "Enterprise B2B SaaS", "explanation": "Company sells to mid-market and enterprise customers" }
+  ]
+}`;
+
+  const message = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 512,
+    temperature: 0,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const text =
+    message.content[0].type === "text" ? message.content[0].text.trim() : "{}";
+
+  const cleaned = text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+
+  const parsed = JSON.parse(cleaned) as { skills: JDSkill[] };
+  return (parsed.skills ?? []).slice(0, 5);
+}
+
 // ─── Step 2: Suggest edits ─────────────────────────────────────────────────────
 
 /**
@@ -156,12 +196,13 @@ For each existing bullet in the resume, decide ONE of:
 
 Rules:
 1. Group bullets by the company/role section they belong to (e.g. "Phyllo", "Amazon", "Visa", "Education")
-2. For "keep": leave suggested as ""
+2. For "keep": leave suggested as "" and reasoning as ""
 3. For "modify": write the improved bullet in suggested
 4. For "add": leave original as "" and write the new bullet in suggested
 5. Only suggest "add" bullets for skills/experiences clearly evidenced by the JD but missing from the resume
 6. Maximum 3 "add" suggestions total — be selective
 7. Be specific and quantitative in rewrites — mirror the JD's language and keywords
+8. For "modify" and "add" actions, add a "reasoning" field: 1-2 lines (max 120 chars) explaining the strategic reason. Use exactly one of these prefixes: "Relevance:" (reframes to mirror JD domain/language), "ATS:" (adds an exact keyword from the JD), or "Gap:" (fills a JD requirement absent from the resume). For "keep", set reasoning to "".
 
 After generating all bullet suggestions, produce an "ats_keyword_coverage" section that:
 1. Lists the top 15 most important keywords and phrases from the JD
@@ -176,7 +217,8 @@ Return ONLY valid JSON (no markdown):
       "section": "string",
       "action": "keep" | "modify" | "add",
       "original": "string",
-      "suggested": "string"
+      "suggested": "string",
+      "reasoning": "string"
     }
   ],
   "ats_keyword_coverage": [
@@ -210,6 +252,7 @@ Return ONLY valid JSON (no markdown):
       action: BulletAction;
       original: string;
       suggested: string;
+      reasoning?: string;
     }>;
     ats_keyword_coverage: Array<{
       keyword: string;

@@ -4,6 +4,11 @@ import fs from "fs";
 import path from "path";
 import { todayISO } from "@/lib/utils";
 import type { Contact, Application } from "@/types";
+import {
+  getResearchCache,
+  saveResearchCache,
+  updateResearchCache,
+} from "@/lib/google-sheets";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = "claude-sonnet-4-6";
@@ -72,6 +77,13 @@ export interface ResearchResult {
   bulletPoints: string[];
   rawFindings: string;
 }
+
+export interface CacheInfo {
+  cachedAt: string;
+  isStale: boolean;
+}
+
+const STALE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 async function researchContact(contact: Contact): Promise<ResearchResult> {
   const { contactName, contactRole, companyName, channelUrl } = contact;
@@ -222,13 +234,15 @@ Return ONLY valid JSON (no markdown):
 
 export async function POST(req: NextRequest) {
   try {
-    const { contact, application, channel, cachedResearch } =
+    const { contact, application, channel, cachedResearch, forceRefresh } =
       (await req.json()) as {
         contact: Contact;
         application?: Application;
         channel: "LinkedIn DM" | "Email";
-        /** Pass cached research to skip the web search step (for Regenerate). */
+        /** Pass cached research to skip the web search step (for Regenerate / channel switch). */
         cachedResearch?: ResearchResult;
+        /** Force a fresh web search, bypassing the Research Cache sheet. */
+        forceRefresh?: boolean;
       };
 
     if (!contact) {
@@ -240,7 +254,69 @@ export async function POST(req: NextRequest) {
 
     const messageType = detectMessageType(contact);
 
-    const research = cachedResearch ?? (await researchContact(contact));
+    let research: ResearchResult;
+    let cacheInfo: CacheInfo | undefined;
+
+    if (cachedResearch) {
+      // Caller already has research (channel switch / in-session regenerate)
+      research = cachedResearch;
+    } else if (!forceRefresh) {
+      // Check Research Cache sheet first
+      const cached = await getResearchCache(
+        contact.contactName,
+        contact.companyName
+      );
+      if (cached) {
+        research = JSON.parse(cached.fullResearchData) as ResearchResult;
+        const cachedAt = cached.researchedAt;
+        const isStale = Date.now() - new Date(cachedAt).getTime() > STALE_MS;
+        cacheInfo = { cachedAt, isStale };
+      } else {
+        // No cache — run web search and save result
+        research = await researchContact(contact);
+        const now = new Date().toISOString();
+        await saveResearchCache({
+          contactName: contact.contactName,
+          company: contact.companyName,
+          role: contact.contactRole,
+          linkedinUrl: contact.channelUrl ?? "",
+          researchSummary: research.bulletPoints,
+          fullResearchData: JSON.stringify(research),
+          researchedAt: now,
+        });
+        cacheInfo = { cachedAt: now, isStale: false };
+      }
+    } else {
+      // forceRefresh — re-run web search and overwrite cache
+      research = await researchContact(contact);
+      const now = new Date().toISOString();
+      const existing = await getResearchCache(
+        contact.contactName,
+        contact.companyName
+      );
+      if (existing?.rowIndex != null) {
+        await updateResearchCache(existing.rowIndex, {
+          contactName: contact.contactName,
+          company: contact.companyName,
+          role: contact.contactRole,
+          linkedinUrl: contact.channelUrl ?? "",
+          researchSummary: research.bulletPoints,
+          fullResearchData: JSON.stringify(research),
+          researchedAt: now,
+        });
+      } else {
+        await saveResearchCache({
+          contactName: contact.contactName,
+          company: contact.companyName,
+          role: contact.contactRole,
+          linkedinUrl: contact.channelUrl ?? "",
+          researchSummary: research.bulletPoints,
+          fullResearchData: JSON.stringify(research),
+          researchedAt: now,
+        });
+      }
+      cacheInfo = { cachedAt: now, isStale: false };
+    }
 
     const variants = await generateVariants(
       contact,
@@ -251,7 +327,7 @@ export async function POST(req: NextRequest) {
     );
 
     return NextResponse.json({
-      data: { research, variants, messageType, channel: effectiveChannel },
+      data: { research, variants, messageType, channel: effectiveChannel, cacheInfo },
     });
   } catch (error) {
     console.error(error);

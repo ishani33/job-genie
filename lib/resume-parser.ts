@@ -48,7 +48,8 @@ export function listResumeFolders(): ResumeFolder[] {
     if (!entry.isDirectory()) continue;
     const filePath = path.join(root, entry.name, RESUME_FILENAME);
     if (fs.existsSync(filePath)) {
-      folders.push({ companyFolder: entry.name, filePath });
+      const mtime = fs.statSync(filePath).mtime.toISOString();
+      folders.push({ companyFolder: entry.name, filePath, mtime });
     }
   }
 

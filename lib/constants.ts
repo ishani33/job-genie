@@ -142,6 +142,7 @@ export const TIER_LABELS: Record<number, string> = {
 export const SHEETS = {
   APPLICATIONS: "Applications",
   NETWORKING: "Networking",
+  RESEARCH_CACHE: "Research Cache",
 } as const;
 
 // ─── Follow-up timing rules (in days) ────────────────────────────────────────
