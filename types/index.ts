@@ -91,6 +91,8 @@ export interface Contact {
   channelUrl: string;
   // Computed / metadata
   rowIndex?: number;
+  /** Set to true when the row failed to parse; row is still shown but flagged in red. */
+  parseError?: boolean;
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────

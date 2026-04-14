@@ -221,9 +221,10 @@ export async function updateApplication(
 
 export async function deleteApplication(app: Application): Promise<void> {
   if (app.rowIndex == null) throw new Error("rowIndex required for delete");
-  // rowIndex is 1-based data index; actual sheet row = rowIndex+1 (header)
-  // batchUpdate uses 0-based startIndex for data row = rowIndex (0-based data) + 1 (header)
-  await deleteRow(APP_SHEET_ID(), SHEETS.APPLICATIONS, app.rowIndex + 1);
+  // rowIndex is 1-based data index.  The batchUpdate API uses 0-based indices
+  // where row 0 = header.  Data row N (1-based) sits at 0-based index N, so
+  // we pass rowIndex directly — no +1.
+  await deleteRow(APP_SHEET_ID(), SHEETS.APPLICATIONS, app.rowIndex);
 }
 
 // ─── Networking CRUD ──────────────────────────────────────────────────────────
@@ -263,7 +264,55 @@ function contactToRow(contact: Omit<Contact, "rowIndex">): string[] {
 
 export async function getContacts(): Promise<Contact[]> {
   const rows = await getRows(NET_SHEET_ID(), SHEETS.NETWORKING);
-  return rows.map((row, i) => rowToContact(row, i + 1));
+  console.log(`[getContacts] Fetched ${rows.length} row(s) from sheet`);
+
+  const contacts: Contact[] = [];
+  const seenIds = new Set<string>();
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const rowIndex = i + 1; // 1-based data index
+    let contact: Contact;
+    try {
+      contact = rowToContact(row, rowIndex);
+    } catch (err) {
+      console.error(
+        `[getContacts] Failed to parse sheet row ${rowIndex + 1} (data index ${rowIndex}):`,
+        row,
+        err
+      );
+      // Never skip a row — return it with available data and flag it
+      contact = {
+        id: row[0] ?? generateId(),
+        companyName: row[1] ?? "",
+        contactName: row[2] ?? `[Parse Error — Row ${rowIndex + 1}]`,
+        contactRole: row[3] ?? "",
+        outreachType: "Other",
+        outreachStatus: "Identified",
+        followUpCount: 0,
+        lastOutreachDate: row[7] ?? "",
+        followUpDate: row[8] ?? "",
+        notes: `[Parse error: ${err instanceof Error ? err.message : String(err)}]`,
+        channelUrl: "",
+        rowIndex,
+        parseError: true,
+      };
+    }
+
+    // Detect duplicate IDs (e.g. a row was manually copied in the sheet).
+    // React uses contact.id as a key; duplicates cause one row to be silently dropped.
+    if (seenIds.has(contact.id)) {
+      console.warn(
+        `[getContacts] Duplicate ID "${contact.id}" at sheet row ${rowIndex + 1}. ` +
+          `Assigning a new ID so the row renders correctly.`
+      );
+      contact = { ...contact, id: generateId() };
+    }
+    seenIds.add(contact.id);
+    contacts.push(contact);
+  }
+
+  return contacts;
 }
 
 export async function createContact(
@@ -291,7 +340,9 @@ export async function updateContact(contact: Contact): Promise<Contact> {
 
 export async function deleteContact(contact: Contact): Promise<void> {
   if (contact.rowIndex == null) throw new Error("rowIndex required for delete");
-  await deleteRow(NET_SHEET_ID(), SHEETS.NETWORKING, contact.rowIndex + 1);
+  // rowIndex is 1-based data index.  batchUpdate uses 0-based indices where
+  // row 0 = header, so data row N (1-based) = 0-based index N.  Pass directly.
+  await deleteRow(NET_SHEET_ID(), SHEETS.NETWORKING, contact.rowIndex);
 }
 
 // ─── Research Cache CRUD ──────────────────────────────────────────────────────

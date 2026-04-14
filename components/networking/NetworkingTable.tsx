@@ -224,21 +224,37 @@ export function NetworkingTable({
                       a.companyName.toLowerCase() === contact.companyName.toLowerCase()
                   ) ?? null;
 
+                // Use rowIndex as key — unique per sheet row even when two rows
+                // share the same ID (e.g. manually duplicated rows). Falls back to
+                // id so the key is always a stable string.
+                const rowKey = contact.rowIndex != null
+                  ? `row-${contact.rowIndex}`
+                  : contact.id;
+
                 return (
-                  <Fragment key={contact.id}>
+                  <Fragment key={rowKey}>
                     {/* ── Contact row ─────────────────────────────── */}
                     <tr
                       className={cn(
                         "table-row",
-                        expanded && "bg-[#1e1e1e]"
+                        expanded && "bg-[#1e1e1e]",
+                        contact.parseError && "bg-red-500/5"
                       )}
                     >
                       {/* First cell: urgency left-border accent */}
                       <td className={cn("table-cell", urgencyBorderClass(contact.followUpDate))}>
                         <div className="flex items-center gap-1.5">
                           <div>
-                            <p className="font-medium text-[#e8e8e8]">
+                            <p className={cn(
+                              "font-medium",
+                              contact.parseError ? "text-red-400" : "text-[#e8e8e8]"
+                            )}>
                               {contact.contactName}
+                              {contact.parseError && (
+                                <span className="ml-1.5 text-[10px] font-normal text-red-400 border border-red-500/40 px-1 py-0.5 rounded">
+                                  parse error
+                                </span>
+                              )}
                             </p>
                             <p className="text-xs text-[#6b7280]">
                               {contact.contactRole}
