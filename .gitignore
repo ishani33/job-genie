@@ -1,24 +1,4 @@
-# Dependencies
-node_modules/
-
-# Environment — never commit secrets
+node_modules
 .env.local
-.env*.local
-
-# Next.js build output
 .next/
-out/
-
-# OS
-.DS_Store
-
-# Editor
 .claude/
-
-# Personal writing style (private)
-ishani-writing-style.md
-
-# Python
-__pycache__/
-*.pyc
-ishani-writing-style.md
